@@ -4,11 +4,16 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app.agent.graph import graph
 from app.database import SessionLocal
 from app.models import Briefing
 
 logger = logging.getLogger(__name__)
+
+
+def get_graph():
+    from app.agent.graph import graph
+
+    return graph
 
 
 async def run_briefing_agent(briefing_id: UUID):
@@ -22,7 +27,7 @@ async def run_briefing_agent(briefing_id: UUID):
         briefing.status = "processing"
         db.commit()
 
-        result = await graph.ainvoke({"condition": briefing.condition})
+        result = await get_graph().ainvoke({"condition": briefing.condition})
 
         briefing.result = {
             "standard_of_care": result["standard_of_care"],

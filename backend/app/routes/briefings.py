@@ -1,7 +1,6 @@
-import asyncio
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -13,12 +12,16 @@ router = APIRouter(prefix="/api/briefings", tags=["briefings"])
 
 
 @router.post("", response_model=BriefingResponse, status_code=201)
-def create_briefing(payload: BriefingCreate, db: Session = Depends(get_db)):
+def create_briefing(
+    payload: BriefingCreate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     briefing = Briefing(condition=payload.condition)
     db.add(briefing)
     db.commit()
     db.refresh(briefing)
-    asyncio.create_task(run_briefing_agent(briefing.id))
+    background_tasks.add_task(run_briefing_agent, briefing.id)
     return briefing
 
 

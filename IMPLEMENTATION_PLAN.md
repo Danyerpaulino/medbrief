@@ -29,6 +29,14 @@ medbrief/
 │   ├── alembic/
 │   │   ├── env.py
 │   │   └── versions/
+│   ├── tests/
+│   │   ├── conftest.py             # pytest fixtures and fake DB session
+│   │   ├── test_health.py          # health check coverage
+│   │   ├── test_briefings_api.py   # briefing CRUD API behavior
+│   │   ├── test_agent_tools.py     # PubMed/ClinicalTrials parsing
+│   │   ├── test_worker.py          # background job success/failure paths
+│   │   └── test_schemas.py         # response schema validation
+│   ├── pytest.ini
 │   ├── alembic.ini
 │   ├── requirements.txt
 │   ├── Dockerfile
@@ -62,6 +70,7 @@ langchain-openai>=0.2
 langchain-community>=0.3
 httpx>=0.27
 python-dotenv>=1.0
+pytest>=8.0
 ```
 
 ### 1.2 Database Models (`app/models.py`)
@@ -208,16 +217,16 @@ graph = workflow.compile()
 
 ## Phase 3: Background Job Execution
 
-### 3.1 Approach: `asyncio.create_task` with in-process execution
+### 3.1 Approach: FastAPI `BackgroundTasks` with in-process execution
 
-For the demo, we'll use FastAPI's background tasks with `asyncio.create_task` to run the LangGraph agent. No external task queue (Celery/Redis) needed for a demo.
+For the demo, we'll use FastAPI's `BackgroundTasks` to run the LangGraph agent after the create response is returned. No external task queue (Celery/Redis) needed for a demo.
 
 ```python
 # In the POST /api/briefings endpoint:
 briefing = Briefing(condition=payload.condition, status="pending")
 db.add(briefing)
 db.commit()
-asyncio.create_task(run_briefing_agent(briefing.id))
+background_tasks.add_task(run_briefing_agent, briefing.id)
 return briefing
 ```
 
@@ -284,6 +293,46 @@ The Next.js frontend (built by user) will consume these endpoints:
 // GET /api/briefings
 // Response: [{ "id": "uuid", "condition": "...", "status": "...", ... }, ...]
 ```
+
+## Phase 6: Automated Test Suite
+
+Use `pytest` for backend regression coverage. Tests should run locally without a real Postgres database, OpenAI call, PubMed call, or ClinicalTrials.gov call. Mock those boundaries so failures point to application behavior rather than external services.
+
+### 6.1 Test Dependencies
+
+Add pytest to `backend/requirements.txt`:
+
+```
+pytest>=8.0
+```
+
+### 6.2 Pytest Configuration (`backend/pytest.ini`)
+
+```ini
+[pytest]
+testpaths = tests
+pythonpath = .
+```
+
+### 6.3 Test Coverage
+
+| File | Purpose |
+|------|---------|
+| `backend/tests/conftest.py` | Test environment variables and fake DB session fixtures |
+| `backend/tests/test_health.py` | Verifies `/health` returns `{"status": "ok"}` |
+| `backend/tests/test_briefings_api.py` | Verifies create/list/get/delete briefing endpoints and background job scheduling |
+| `backend/tests/test_agent_tools.py` | Verifies PubMed XML parsing and ClinicalTrials.gov response mapping without network calls |
+| `backend/tests/test_worker.py` | Verifies worker status transitions for completed and failed agent runs |
+| `backend/tests/test_schemas.py` | Verifies nested briefing result response validation |
+
+### 6.4 Local Test Command
+
+```bash
+cd backend
+pytest
+```
+
+Run this before deployment commits and before pushing to GitHub/production.
 
 ## Git & GitHub Strategy
 
@@ -379,14 +428,26 @@ Each commit below represents a logical, self-contained unit of work. Commit at e
 
 ---
 
-**Commit 7: `feat(deploy): add Dockerfile and Railway configuration`**
+**Commit 7: `test(backend): add pytest coverage for API, agent tools, and worker`**
+- `backend/requirements.txt` (add `pytest`)
+- `backend/pytest.ini`
+- `backend/tests/conftest.py`
+- `backend/tests/test_health.py`
+- `backend/tests/test_briefings_api.py`
+- `backend/tests/test_agent_tools.py`
+- `backend/tests/test_worker.py`
+- `backend/tests/test_schemas.py`
+
+---
+
+**Commit 8: `feat(deploy): add Dockerfile and Railway configuration`**
 - `backend/Dockerfile`
 - `backend/railway.toml` (if needed)
 - `Procfile` or Railway start command config
 
 ---
 
-**Commit 8: `docs: add README with setup and deployment instructions`**
+**Commit 9: `docs: add README with setup and deployment instructions`**
 - `README.md`
 
 ---
@@ -510,15 +571,18 @@ Both platforms deploy from the same repo, each watching its own root directory.
 4. **Agent tools** — PubMed + ClinicalTrials.gov integrations → **Commit 4**
 5. **LangGraph workflow** — state, nodes, graph assembly → **Commit 5**
 6. **Background worker** — wire agent to API endpoints → **Commit 6**
-7. **Deployment config** — Dockerfile, railway.toml, PORT binding → **Commit 7**
-8. **Documentation** — README with setup/deploy instructions → **Commit 8**
-9. **Push to GitHub** → Railway + Vercel auto-deploy
-10. **Integration testing** — end-to-end verification on deployed infra
+7. **Automated tests** — pytest config and backend coverage → **Commit 7**
+8. **Deployment config** — Dockerfile, railway.toml, PORT binding → **Commit 8**
+9. **Documentation** — README with setup/deploy instructions → **Commit 9**
+10. **Run tests locally** — `cd backend && pytest`
+11. **Push to GitHub** → Railway + Vercel auto-deploy
+12. **Integration testing** — end-to-end verification on deployed infra
 
 ## Verification
 
-1. **Local**: `uvicorn app.main:app --reload` — POST a briefing, poll until complete
-2. **Railway**: Push to GitHub, confirm health check passes at `/health`
-3. **Database**: Verify Alembic migration runs on deploy (check Railway deploy logs)
-4. **CORS**: Hit the Railway backend from `localhost:3000` (frontend dev) — no CORS errors
-5. **End-to-end**: Frontend submits condition → backend processes → frontend displays briefing
+1. **Automated backend tests**: `cd backend && pytest`
+2. **Local API**: `uvicorn app.main:app --reload` — POST a briefing, poll until complete
+3. **Railway**: Push to GitHub, confirm health check passes at `/health`
+4. **Database**: Verify Alembic migration runs on deploy (check Railway deploy logs)
+5. **CORS**: Hit the Railway backend from `localhost:3000` (frontend dev) — no CORS errors
+6. **End-to-end**: Frontend submits condition → backend processes → frontend displays briefing
