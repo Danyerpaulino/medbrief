@@ -1,4 +1,5 @@
 import json
+import re
 
 from langchain_openai import ChatOpenAI
 
@@ -7,6 +8,20 @@ from app.agent.tools import search_clinical_trials, search_pubmed
 from app.config import settings
 
 llm = ChatOpenAI(model="gpt-4o", api_key=settings.openai_api_key, temperature=0)
+
+
+def _parse_json_response(text: str) -> list | dict | None:
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(1))
+        except json.JSONDecodeError:
+            pass
+    return None
 
 
 async def research_pubmed_node(state: AgentState) -> dict:
@@ -32,9 +47,8 @@ References should be in the format "AuthorName et al., Journal, Year (PMID: xxxx
 Return ONLY valid JSON, no markdown."""
 
     response = await llm.ainvoke([{"role": "user", "content": prompt}])
-    try:
-        sections = json.loads(response.content)
-    except json.JSONDecodeError:
+    sections = _parse_json_response(response.content)
+    if not isinstance(sections, list):
         sections = [{"title": "Standard of Care", "content": response.content, "references": []}]
     return {"standard_of_care": sections}
 
@@ -51,9 +65,8 @@ Focus on the most promising and novel treatments.
 Return ONLY valid JSON, no markdown."""
 
     response = await llm.ainvoke([{"role": "user", "content": prompt}])
-    try:
-        treatments = json.loads(response.content)
-    except json.JSONDecodeError:
+    treatments = _parse_json_response(response.content)
+    if not isinstance(treatments, list):
         treatments = []
     return {"emerging_treatments": treatments}
 
@@ -76,9 +89,8 @@ Role should describe what they're doing in this therapeutic space.
 Return ONLY valid JSON, no markdown."""
 
     response = await llm.ainvoke([{"role": "user", "content": prompt}])
-    try:
-        players = json.loads(response.content)
-    except json.JSONDecodeError:
+    players = _parse_json_response(response.content)
+    if not isinstance(players, list):
         players = []
     return {"key_players": players}
 

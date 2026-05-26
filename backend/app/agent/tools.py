@@ -1,39 +1,47 @@
+import logging
+
 import httpx
+
+logger = logging.getLogger(__name__)
 
 PUBMED_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 CLINICAL_TRIALS_BASE = "https://clinicaltrials.gov/api/v2"
 
 
 async def search_pubmed(query: str, max_results: int = 20) -> list[dict]:
-    async with httpx.AsyncClient(timeout=30) as client:
-        search_resp = await client.get(
-            f"{PUBMED_BASE}/esearch.fcgi",
-            params={
-                "db": "pubmed",
-                "term": f"{query} AND (review[pt] OR guideline[pt])",
-                "retmax": max_results,
-                "retmode": "json",
-                "sort": "date",
-            },
-        )
-        search_resp.raise_for_status()
-        ids = search_resp.json().get("esearchresult", {}).get("idlist", [])
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            search_resp = await client.get(
+                f"{PUBMED_BASE}/esearch.fcgi",
+                params={
+                    "db": "pubmed",
+                    "term": f"{query} AND (review[pt] OR guideline[pt])",
+                    "retmax": max_results,
+                    "retmode": "json",
+                    "sort": "date",
+                },
+            )
+            search_resp.raise_for_status()
+            ids = search_resp.json().get("esearchresult", {}).get("idlist", [])
 
-        if not ids:
-            return []
+            if not ids:
+                return []
 
-        fetch_resp = await client.get(
-            f"{PUBMED_BASE}/efetch.fcgi",
-            params={
-                "db": "pubmed",
-                "id": ",".join(ids),
-                "retmode": "xml",
-                "rettype": "abstract",
-            },
-        )
-        fetch_resp.raise_for_status()
+            fetch_resp = await client.get(
+                f"{PUBMED_BASE}/efetch.fcgi",
+                params={
+                    "db": "pubmed",
+                    "id": ",".join(ids),
+                    "retmode": "xml",
+                    "rettype": "abstract",
+                },
+            )
+            fetch_resp.raise_for_status()
 
-        return _parse_pubmed_xml(fetch_resp.text)
+            return _parse_pubmed_xml(fetch_resp.text)
+    except (httpx.HTTPStatusError, httpx.RequestError) as e:
+        logger.error(f"PubMed API error: {e}")
+        return []
 
 
 def _parse_pubmed_xml(xml_text: str) -> list[dict]:
@@ -94,10 +102,14 @@ async def search_clinical_trials(
         "fields": "NCTId,BriefTitle,OverallStatus,Phase,LeadSponsorName,InterventionName,InterventionType,BriefSummary",
     }
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(f"{CLINICAL_TRIALS_BASE}/studies", params=params)
-        resp.raise_for_status()
-        data = resp.json()
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(f"{CLINICAL_TRIALS_BASE}/studies", params=params)
+            resp.raise_for_status()
+            data = resp.json()
+    except (httpx.HTTPStatusError, httpx.RequestError) as e:
+        logger.error(f"ClinicalTrials.gov API error: {e}")
+        return []
 
     studies = data.get("studies", [])
     results = []
@@ -114,6 +126,10 @@ async def search_clinical_trials(
         phases = design_module.get("phases", [])
         interventions = arms_module.get("interventions", [])
 
+        brief_summary = desc_module.get("briefSummary", "")
+        if isinstance(brief_summary, dict):
+            brief_summary = brief_summary.get("textBlock", "")
+
         results.append({
             "nct_id": id_module.get("nctId", ""),
             "title": id_module.get("briefTitle", ""),
@@ -124,7 +140,7 @@ async def search_clinical_trials(
                 {"name": i.get("name", ""), "type": i.get("type", "")}
                 for i in interventions[:5]
             ],
-            "summary": desc_module.get("briefSummary", {}).get("textBlock", ""),
+            "summary": brief_summary if isinstance(brief_summary, str) else "",
         })
 
     return results
