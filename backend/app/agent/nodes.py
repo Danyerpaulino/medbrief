@@ -131,11 +131,11 @@ async def grounding_check_node(state: AgentState) -> dict:
     soc_context = json.dumps(state["standard_of_care"][:5], indent=2)
     sources_context = json.dumps({
         "pubmed_articles": [
-            {"pmid": a.get("pmid"), "title": a.get("title"), "abstract": a.get("abstract", "")[:200]}
+            {"pmid": a.get("pmid"), "title": a.get("title"), "abstract": (a.get("abstract") or "")[:200]}
             for a in state["pubmed_results"][:15]
         ],
         "clinical_trials": [
-            {"nct_id": t.get("nct_id"), "title": t.get("title"), "summary": t.get("summary", "")[:200]}
+            {"nct_id": t.get("nct_id"), "title": t.get("title"), "summary": (t.get("summary") or "")[:200]}
             for t in state["clinical_trials"][:15]
         ],
     }, indent=2)

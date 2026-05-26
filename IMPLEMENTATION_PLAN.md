@@ -7,8 +7,8 @@ A health system strategy team needs a tool that generates structured medical con
 
 ```
 medbrief/
-├── backend/                  # FastAPI backend + venv
-│   ├── venv/                 # Python virtual environment
+├── backend/                  # FastAPI backend + .venv
+│   ├── .venv/                # Python virtual environment
 │   ├── app/
 │   │   ├── __init__.py
 │   │   ├── main.py           # FastAPI app entry point
@@ -23,8 +23,9 @@ medbrief/
 │   │   │   ├── __init__.py
 │   │   │   ├── graph.py      # LangGraph workflow definition
 │   │   │   ├── state.py      # Agent state schema
-│   │   │   ├── nodes.py      # Graph node functions
-│   │   │   └── tools.py      # PubMed + ClinicalTrials.gov tools
+│   │   │   ├── nodes.py      # Graph node functions (incl. grounding + confidence)
+│   │   │   ├── tools.py      # PubMed + ClinicalTrials.gov tools
+│   │   │   └── guardrails.py # Input validation & medical scope guard
 │   │   └── worker.py         # Background job runner
 │   ├── alembic/
 │   │   ├── env.py
@@ -32,10 +33,11 @@ medbrief/
 │   ├── tests/
 │   │   ├── conftest.py             # pytest fixtures and fake DB session
 │   │   ├── test_health.py          # health check coverage
-│   │   ├── test_briefings_api.py   # briefing CRUD API behavior
+│   │   ├── test_briefings_api.py   # briefing CRUD API behavior (incl. validation rejection)
 │   │   ├── test_agent_tools.py     # PubMed/ClinicalTrials parsing
 │   │   ├── test_worker.py          # background job success/failure paths
-│   │   └── test_schemas.py         # response schema validation
+│   │   ├── test_schemas.py         # response schema validation
+│   │   └── test_guardrails.py      # input validation & injection detection
 │   ├── pytest.ini
 │   ├── alembic.ini
 │   ├── requirements.txt
@@ -109,6 +111,8 @@ class BriefingResult(BaseModel):
     emerging_treatments: list[Treatment]
     key_players: list[Player]
     summary: str
+    grounding: list[GroundingEntry]
+    confidence_scores: list[ConfidenceEntry]
 
 class Section(BaseModel):
     title: str
@@ -127,6 +131,20 @@ class Player(BaseModel):
     name: str
     type: str               # "pharma", "biotech", "academic", "hospital_system"
     role: str               # what they're doing in this space
+
+class GroundingEntry(BaseModel):
+    section: str            # which section this claim belongs to
+    claim: str              # the specific claim being verified
+    supported: bool         # whether the claim traces to a retrieved source
+    source_ids: list[str]   # PMID:xxxxx or NCTxxxxxxxx identifiers
+
+class ConfidenceEntry(BaseModel):
+    section: str            # section name
+    level: str              # "strong", "moderate", "limited"
+    source_count: int       # number of sources informing this section
+    newest_year: str        # most recent source year
+    oldest_year: str        # oldest source year
+    rationale: str          # one-sentence explanation
 ```
 
 ### 1.4 API Endpoints (`app/routes/briefings.py`)
@@ -151,6 +169,22 @@ alembic init alembic
 ### 2.1 Agent State (`app/agent/state.py`)
 
 ```python
+class ConfidenceScore(TypedDict):
+    section: str
+    level: str  # "strong", "moderate", "limited"
+    source_count: int
+    newest_year: str
+    oldest_year: str
+    rationale: str
+
+
+class GroundingResult(TypedDict):
+    section: str
+    claim: str
+    supported: bool
+    source_ids: list[str]  # PMIDs or NCT IDs
+
+
 class AgentState(TypedDict):
     condition: str
     pubmed_results: list[dict]
@@ -159,14 +193,16 @@ class AgentState(TypedDict):
     emerging_treatments: list[dict]
     key_players: list[dict]
     summary: str
+    confidence_scores: list[dict]
+    grounding: list[dict]
 ```
 
 ### 2.2 Graph Nodes (`app/agent/nodes.py`)
 
-The workflow is a **linear pipeline** (no cycles needed for v1):
+The workflow is a **linear pipeline** with post-synthesis governance checks:
 
 ```
-START → research_pubmed → research_trials → analyze_standard_of_care → analyze_emerging → identify_players → synthesize → END
+START → research_pubmed → research_trials → analyze_standard_of_care → analyze_emerging → identify_players → synthesize → grounding_check → confidence_scoring → END
 ```
 
 **Nodes:**
@@ -176,6 +212,8 @@ START → research_pubmed → research_trials → analyze_standard_of_care → a
 4. **analyze_emerging** — GPT-4 analyzes clinical trials data to identify emerging treatments
 5. **identify_players** — GPT-4 extracts key companies, institutions, and academic centers from all gathered data
 6. **synthesize** — GPT-4 generates executive summary tying it all together
+7. **grounding_check** — Cross-references output claims against raw PubMed/ClinicalTrials.gov sources; reports per-claim traceability with source IDs (PMIDs, NCT IDs)
+8. **confidence_scoring** — Assigns per-section evidence strength (strong/moderate/limited) based on source count, date range, and grounding results; includes deterministic fallback if LLM parsing fails
 
 ### 2.3 Tools (`app/agent/tools.py`)
 
@@ -203,6 +241,8 @@ workflow.add_node("analyze_standard_of_care", analyze_soc_node)
 workflow.add_node("analyze_emerging", analyze_emerging_node)
 workflow.add_node("identify_players", identify_players_node)
 workflow.add_node("synthesize", synthesize_node)
+workflow.add_node("grounding_check", grounding_check_node)
+workflow.add_node("confidence_scoring", confidence_scoring_node)
 
 workflow.set_entry_point("research_pubmed")
 workflow.add_edge("research_pubmed", "research_trials")
@@ -210,7 +250,9 @@ workflow.add_edge("research_trials", "analyze_standard_of_care")
 workflow.add_edge("analyze_standard_of_care", "analyze_emerging")
 workflow.add_edge("analyze_emerging", "identify_players")
 workflow.add_edge("identify_players", "synthesize")
-workflow.set_finish_point("synthesize")
+workflow.add_edge("synthesize", "grounding_check")
+workflow.add_edge("grounding_check", "confidence_scoring")
+workflow.set_finish_point("confidence_scoring")
 
 graph = workflow.compile()
 ```
@@ -320,10 +362,11 @@ pythonpath = .
 |------|---------|
 | `backend/tests/conftest.py` | Test environment variables and fake DB session fixtures |
 | `backend/tests/test_health.py` | Verifies `/health` returns `{"status": "ok"}` |
-| `backend/tests/test_briefings_api.py` | Verifies create/list/get/delete briefing endpoints and background job scheduling |
+| `backend/tests/test_briefings_api.py` | Verifies create/list/get/delete briefing endpoints, background job scheduling, and input validation rejection |
 | `backend/tests/test_agent_tools.py` | Verifies PubMed XML parsing and ClinicalTrials.gov response mapping without network calls |
-| `backend/tests/test_worker.py` | Verifies worker status transitions for completed and failed agent runs |
+| `backend/tests/test_worker.py` | Verifies worker status transitions for completed and failed agent runs (including grounding/confidence output) |
 | `backend/tests/test_schemas.py` | Verifies nested briefing result response validation |
+| `backend/tests/test_guardrails.py` | Verifies input validation: empty/short/long rejection, injection pattern detection, LLM-based medical scope classification |
 
 ### 6.4 Local Test Command
 
@@ -333,6 +376,80 @@ pytest
 ```
 
 Run this before deployment commits and before pushing to GitHub/production.
+
+## Phase 7: Governance & Guardrails
+
+Three features designed to demonstrate enterprise-readiness and responsible AI to stakeholders.
+
+### 7.1 Input Validation Guard (`app/agent/guardrails.py`)
+
+A multi-layer gate that runs **before** the agent pipeline starts:
+
+1. **Fast rule-based checks** — rejects empty, too-short (<3 chars), or too-long (>200 chars) inputs immediately
+2. **Regex injection detection** — matches common prompt injection patterns (e.g., "ignore previous instructions", "you are now", SQL keywords) and rejects without calling an LLM
+3. **LLM medical scope classifier** — uses `gpt-4o-mini` (fast, cheap) to determine whether the input is a legitimate medical condition. Returns `{accepted: bool, reason: str}`
+
+**Integration:** The `POST /api/briefings` endpoint calls `validate_condition_input()` before creating the briefing record. Returns HTTP 422 with a clear error message on rejection.
+
+**Frontend behavior:** Validation errors appear inline below the input field with a red border and descriptive message. The error clears when the user modifies their input.
+
+### 7.2 Citation Grounding (`grounding_check` node)
+
+Post-synthesis verification that cross-references output claims against the raw retrieved sources.
+
+**How it works:**
+- Collects all source IDs (PMIDs from PubMed, NCT IDs from ClinicalTrials.gov)
+- Asks the LLM to identify 2-3 key claims per standard-of-care section
+- For each claim, checks whether it can be traced back to one or more retrieved sources
+- Returns structured results: `{section, claim, supported: bool, source_ids: [...]}`
+
+**Frontend behavior:** "Source Verification" panel displays:
+- Overall grounding percentage (X of Y claims verified)
+- Per-claim listing with check (supported) or warning (unsupported) icons
+- Source IDs displayed as links next to each verified claim
+
+### 7.3 Confidence Scoring (`confidence_scoring` node)
+
+Per-section evidence strength assessment that runs after grounding.
+
+**Scoring levels:**
+- **Strong** — 10+ relevant sources, recent data, high grounding
+- **Moderate** — 5-9 sources or some gaps in coverage
+- **Limited** — Fewer than 5 sources, older data, or weak grounding
+
+**Fields per section:** `section`, `level`, `source_count`, `newest_year`, `oldest_year`, `rationale`
+
+**Fallback:** If LLM parsing fails, a deterministic fallback calculates confidence based on raw source counts and year ranges.
+
+**Frontend behavior:**
+- "Evidence Confidence" overview panel at the top of results with color-coded legend
+- Per-section confidence badges (green/yellow/red) next to each section header
+- Hover/title text shows rationale
+
+### 7.4 Output Disclaimer
+
+Every completed briefing displays a footer disclaimer:
+
+> "This briefing is generated for strategic planning purposes only. It does not constitute medical advice, treatment recommendations, or prescribing guidance. All information should be independently verified before use in clinical or business decisions."
+
+### 7.5 Commit for Phase 7
+
+**Commit 10: `feat(agent): add guardrails, citation grounding, and confidence scoring`**
+- `backend/app/agent/guardrails.py`
+- `backend/app/agent/state.py` (expanded with grounding/confidence types)
+- `backend/app/agent/nodes.py` (added grounding_check_node, confidence_scoring_node)
+- `backend/app/agent/graph.py` (extended pipeline with 2 new nodes)
+- `backend/app/schemas.py` (added GroundingEntry, ConfidenceEntry to BriefingResult)
+- `backend/app/routes/briefings.py` (async, wired validation guard)
+- `backend/app/worker.py` (includes grounding/confidence in stored result)
+- `backend/tests/test_guardrails.py`
+- `backend/tests/test_briefings_api.py` (added validation rejection test)
+- `backend/tests/test_worker.py` (updated expected result shape)
+- `frontend/lib/api.ts` (added GroundingEntry, ConfidenceEntry types; improved error handling)
+- `frontend/app/page.tsx` (validation error display)
+- `frontend/app/briefings/[id]/page.tsx` (confidence overview, section badges, grounding panel, disclaimer)
+
+---
 
 ## Git & GitHub Strategy
 
@@ -574,9 +691,10 @@ Both platforms deploy from the same repo, each watching its own root directory.
 7. **Automated tests** — pytest config and backend coverage → **Commit 7**
 8. **Deployment config** — Dockerfile, railway.toml, PORT binding → **Commit 8**
 9. **Documentation** — README with setup/deploy instructions → **Commit 9**
-10. **Run tests locally** — `cd backend && pytest`
-11. **Push to GitHub** → Railway + Vercel auto-deploy
-12. **Integration testing** — end-to-end verification on deployed infra
+10. **Governance & guardrails** — input validation, citation grounding, confidence scoring → **Commit 10**
+11. **Run tests locally** — `cd backend && pytest` (17 tests passing)
+12. **Push to GitHub** → Railway + Vercel auto-deploy
+13. **Integration testing** — end-to-end verification on deployed infra
 
 ## Verification
 
