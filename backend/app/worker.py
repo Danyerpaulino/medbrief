@@ -34,6 +34,8 @@ async def run_briefing_agent(briefing_id: UUID):
             "emerging_treatments": result["emerging_treatments"],
             "key_players": result["key_players"],
             "summary": result["summary"],
+            "grounding": result.get("grounding", []),
+            "confidence_scores": result.get("confidence_scores", []),
         }
         briefing.status = "completed"
         briefing.completed_at = datetime.now(timezone.utc)

@@ -25,11 +25,29 @@ class Player(BaseModel):
     role: str
 
 
+class GroundingEntry(BaseModel):
+    section: str
+    claim: str
+    supported: bool
+    source_ids: list[str] = []
+
+
+class ConfidenceEntry(BaseModel):
+    section: str
+    level: str  # "strong", "moderate", "limited"
+    source_count: int
+    newest_year: str = "N/A"
+    oldest_year: str = "N/A"
+    rationale: str
+
+
 class BriefingResult(BaseModel):
     standard_of_care: list[Section]
     emerging_treatments: list[Treatment]
     key_players: list[Player]
     summary: str
+    grounding: list[GroundingEntry] = []
+    confidence_scores: list[ConfidenceEntry] = []
 
 
 class BriefingCreate(BaseModel):

@@ -55,6 +55,8 @@ def test_run_briefing_agent_marks_completed(monkeypatch):
                 "emerging_treatments": [],
                 "key_players": [],
                 "summary": "Executive summary",
+                "grounding": [{"section": "Care", "claim": "Test", "supported": True, "source_ids": ["PMID:123"]}],
+                "confidence_scores": [{"section": "Care", "level": "strong", "source_count": 10, "newest_year": "2025", "oldest_year": "2020", "rationale": "Well supported."}],
             }
 
     monkeypatch.setattr(worker, "SessionLocal", lambda: session)
@@ -68,6 +70,8 @@ def test_run_briefing_agent_marks_completed(monkeypatch):
         "emerging_treatments": [],
         "key_players": [],
         "summary": "Executive summary",
+        "grounding": [{"section": "Care", "claim": "Test", "supported": True, "source_ids": ["PMID:123"]}],
+        "confidence_scores": [{"section": "Care", "level": "strong", "source_count": 10, "newest_year": "2025", "oldest_year": "2020", "rationale": "Well supported."}],
     }
     assert briefing.completed_at is not None
     assert session.commits == 2

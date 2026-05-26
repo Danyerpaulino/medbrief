@@ -3,6 +3,7 @@ from uuid import UUID
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.agent.guardrails import validate_condition_input
 from app.database import get_db
 from app.models import Briefing
 from app.schemas import BriefingCreate, BriefingResponse
@@ -12,11 +13,15 @@ router = APIRouter(prefix="/api/briefings", tags=["briefings"])
 
 
 @router.post("", response_model=BriefingResponse, status_code=201)
-def create_briefing(
+async def create_briefing(
     payload: BriefingCreate,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
+    validation = await validate_condition_input(payload.condition)
+    if not validation.accepted:
+        raise HTTPException(status_code=422, detail=validation.reason)
+
     briefing = Briefing(condition=payload.condition)
     db.add(briefing)
     db.commit()

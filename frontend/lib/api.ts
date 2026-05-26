@@ -21,11 +21,29 @@ export interface Player {
   role: string;
 }
 
+export interface GroundingEntry {
+  section: string;
+  claim: string;
+  supported: boolean;
+  source_ids: string[];
+}
+
+export interface ConfidenceEntry {
+  section: string;
+  level: "strong" | "moderate" | "limited";
+  source_count: number;
+  newest_year: string;
+  oldest_year: string;
+  rationale: string;
+}
+
 export interface BriefingResult {
   standard_of_care: Section[];
   emerging_treatments: Treatment[];
   key_players: Player[];
   summary: string;
+  grounding: GroundingEntry[];
+  confidence_scores: ConfidenceEntry[];
 }
 
 export interface Briefing {
@@ -44,7 +62,11 @@ export async function createBriefing(condition: string): Promise<Briefing> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ condition }),
   });
-  if (!res.ok) throw new Error("Failed to create briefing");
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    const detail = body?.detail || "Failed to create briefing";
+    throw new Error(detail);
+  }
   return res.json();
 }
 

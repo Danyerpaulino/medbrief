@@ -1,10 +1,12 @@
 import asyncio
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 from fastapi import BackgroundTasks, HTTPException
 
+from app.agent import guardrails as guardrails_module
 from app.models import Briefing
 from app.routes import briefings as briefings_module
 from app.schemas import BriefingCreate
@@ -18,17 +20,27 @@ def test_create_briefing_persists_record_and_schedules_worker(
     async def fake_run_briefing_agent(briefing_id):
         scheduled.append(briefing_id)
 
+    async def fake_validate(condition):
+        return guardrails_module.ValidationResult(True, "Valid")
+
     monkeypatch.setattr(
         briefings_module,
         "run_briefing_agent",
         fake_run_briefing_agent,
     )
+    monkeypatch.setattr(
+        briefings_module,
+        "validate_condition_input",
+        fake_validate,
+    )
 
     background_tasks = BackgroundTasks()
-    briefing = briefings_module.create_briefing(
-        BriefingCreate(condition="Type 2 Diabetes"),
-        background_tasks,
-        api_session,
+    briefing = asyncio.run(
+        briefings_module.create_briefing(
+            BriefingCreate(condition="Type 2 Diabetes"),
+            background_tasks,
+            api_session,
+        )
     )
     asyncio.run(background_tasks())
 
@@ -36,6 +48,32 @@ def test_create_briefing_persists_record_and_schedules_worker(
     assert briefing.status == "pending"
     assert briefing.id in api_session.records
     assert scheduled == [briefing.id]
+
+
+def test_create_briefing_rejects_invalid_input(api_session, monkeypatch):
+    async def fake_validate(condition):
+        return guardrails_module.ValidationResult(
+            False, "Not a valid medical condition."
+        )
+
+    monkeypatch.setattr(
+        briefings_module,
+        "validate_condition_input",
+        fake_validate,
+    )
+
+    background_tasks = BackgroundTasks()
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            briefings_module.create_briefing(
+                BriefingCreate(condition="best pizza in NYC"),
+                background_tasks,
+                api_session,
+            )
+        )
+
+    assert exc_info.value.status_code == 422
+    assert "Not a valid medical condition" in exc_info.value.detail
 
 
 def test_list_and_get_briefings(api_session):
