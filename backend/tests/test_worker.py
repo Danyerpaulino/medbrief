@@ -78,6 +78,51 @@ def test_run_briefing_agent_marks_completed(monkeypatch):
     assert session.closed is True
 
 
+def test_run_briefing_agent_normalizes_confidence_scores(monkeypatch):
+    briefing = make_briefing()
+    session = FakeSession(briefing)
+
+    class FakeGraph:
+        async def ainvoke(self, _state):
+            return {
+                "standard_of_care": [],
+                "emerging_treatments": [],
+                "key_players": [],
+                "summary": "Executive summary",
+                "grounding": [
+                    {
+                        "section": "Care",
+                        "claim": "Test",
+                        "supported": True,
+                        "source_ids": "PMID:123",
+                    }
+                ],
+                "confidence_scores": [
+                    {
+                        "section": "Care",
+                        "level": "Strong",
+                        "source_count": "10",
+                        "newest_year": 2026,
+                        "oldest_year": None,
+                        "rationale": None,
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(worker, "SessionLocal", lambda: session)
+    monkeypatch.setattr(worker, "get_graph", lambda: FakeGraph())
+
+    asyncio.run(worker.run_briefing_agent(briefing.id))
+
+    assert briefing.status == "completed"
+    assert briefing.result["grounding"][0]["source_ids"] == ["PMID:123"]
+    assert briefing.result["confidence_scores"][0]["level"] == "strong"
+    assert briefing.result["confidence_scores"][0]["source_count"] == 10
+    assert briefing.result["confidence_scores"][0]["newest_year"] == "2026"
+    assert briefing.result["confidence_scores"][0]["oldest_year"] == "N/A"
+    assert briefing.result["confidence_scores"][0]["rationale"] == ""
+
+
 def test_run_briefing_agent_marks_failed_on_error(monkeypatch):
     briefing = make_briefing()
     session = FakeSession(briefing)

@@ -8,6 +8,7 @@ backend/.venv/
 dist/
 build/
 IMPLEMENTATION_PLAN.md
+MedBrief_Stakeholder_Pitch_Single_Slide.pptx
 
 # Environment
 .env

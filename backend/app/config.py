@@ -1,8 +1,10 @@
-from pydantic import field_validator
+from pydantic import ConfigDict, field_validator
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
+    model_config = ConfigDict(env_file=".env")
+
     database_url: str = "postgresql://user:password@localhost:5432/medbrief"
     openai_api_key: str = ""
     frontend_url: str = "http://localhost:3000"
@@ -13,9 +15,6 @@ class Settings(BaseSettings):
         if v.startswith("postgres://"):
             return v.replace("postgres://", "postgresql://", 1)
         return v
-
-    class Config:
-        env_file = ".env"
 
 
 settings = Settings()

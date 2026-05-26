@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app.models import Briefing
+from app.schemas import BriefingResult
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +15,18 @@ def get_graph():
     from app.agent.graph import graph
 
     return graph
+
+
+def normalize_agent_result(result: dict) -> dict:
+    payload = {
+        "standard_of_care": result.get("standard_of_care", []),
+        "emerging_treatments": result.get("emerging_treatments", []),
+        "key_players": result.get("key_players", []),
+        "summary": result.get("summary", ""),
+        "grounding": result.get("grounding", []),
+        "confidence_scores": result.get("confidence_scores", []),
+    }
+    return BriefingResult.model_validate(payload).model_dump(mode="json")
 
 
 async def run_briefing_agent(briefing_id: UUID):
@@ -29,14 +42,7 @@ async def run_briefing_agent(briefing_id: UUID):
 
         result = await get_graph().ainvoke({"condition": briefing.condition})
 
-        briefing.result = {
-            "standard_of_care": result["standard_of_care"],
-            "emerging_treatments": result["emerging_treatments"],
-            "key_players": result["key_players"],
-            "summary": result["summary"],
-            "grounding": result.get("grounding", []),
-            "confidence_scores": result.get("confidence_scores", []),
-        }
+        briefing.result = normalize_agent_result(result)
         briefing.status = "completed"
         briefing.completed_at = datetime.now(timezone.utc)
         db.commit()
